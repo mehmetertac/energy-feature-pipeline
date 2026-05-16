@@ -1,0 +1,35 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.13
+    hooks:
+      - id: ruff-format
+      - id: ruff-check
+        args: [--fix]
+
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.9.1
+    hooks:
+      - id: nbstripout
+
+  - repo: local
+    hooks:
+      - id: pytest-cov-pre-push
+        name: pytest + coverage (pre-push)
+        entry: python -m pytest -q --cov=energy_features --cov-report=term-missing
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: check-docs-updated-pre-push
+        name: docs updated when package changed (pre-push)
+        entry: python scripts/check_docs_updated.py
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
