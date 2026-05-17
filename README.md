@@ -16,8 +16,8 @@ Related course repo (hourly load parquet built there): [energy-ts-fundamentals R
 
 | Milestone | Scope |
 |-----------|--------|
-| **Task 1 (this scaffold)** | Package layout, `calendar.py`, `lags.py`, OPSD loader with local-first + download fallback, notebook comparing calendar-only vs calendar+lags + LightGBM, tests + hooks. |
-| Next | `solar.py` (pvlib), `wind.py` (windpowerlib), `weather.py` (ERA5 `cdsapi`, NWP e.g. Herbie), weather-vs-model ablations. |
+| **Task 1 (this scaffold)** | Package layout, `calendar.py`, `lags.py`, `thermal.py` (HDD/CDD), `solar.py` (pvlib clear-sky), OPSD loader with local-first + download fallback, notebook comparing calendar-only vs calendar+lags + LightGBM, tests + hooks. |
+| Next | `wind.py` (windpowerlib), `weather.py` (ERA5 `cdsapi`, NWP e.g. Herbie), weather-vs-model ablations. |
 
 ---
 
@@ -45,7 +45,8 @@ On Windows, if `python` is not on `PATH`, use `py -m pip` / `py -m pytest` inste
 | [`energy_features/calendar.py`](energy_features/calendar.py) | Calendar + holiday features + sin/cos hour & day-of-year |
 | [`energy_features/lags.py`](energy_features/lags.py) | Lag / rolling via feature-engine (`LagFeatures`, `WindowFeatures`; default 24h / 168h) |
 | [`energy_features/data_loader.py`](energy_features/data_loader.py) | OPSD + optional load parquet |
-| [`energy_features/solar.py`](energy_features/solar.py) | Stub → pvlib later |
+| [`energy_features/thermal.py`](energy_features/thermal.py) | Heating/cooling degree amounts from temperature (HDD/CDD vs 18 °C base) |
+| [`energy_features/solar.py`](energy_features/solar.py) | pvlib solar position + clear-sky GHI/DNI/DHI |
 | [`energy_features/wind.py`](energy_features/wind.py) | Stub → windpowerlib later |
 | [`energy_features/weather.py`](energy_features/weather.py) | Stub → ERA5 / NWP later |
 | [`notebooks/01_calendar_lag_baseline.ipynb`](notebooks/01_calendar_lag_baseline.ipynb) | Task 1 demo |

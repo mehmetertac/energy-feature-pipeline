@@ -62,7 +62,6 @@ addopts = "-ra"
 branch = true
 source = ["energy_features"]
 omit = [
-    "energy_features/solar.py",
     "energy_features/wind.py",
     "energy_features/weather.py",
 ]
