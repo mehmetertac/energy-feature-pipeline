@@ -61,10 +61,7 @@ addopts = "-ra"
 [tool.coverage.run]
 branch = true
 source = ["energy_features"]
-omit = [
-    "energy_features/wind.py",
-    "energy_features/weather.py",
-]
+omit = []
 
 [tool.coverage.report]
 fail_under = 70

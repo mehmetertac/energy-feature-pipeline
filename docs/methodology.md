@@ -9,7 +9,8 @@ Cross-links: [README](../README.md), [data_sources](data_sources.md), [decisions
 1. **Calendar / holiday** — [`make_calendar_features`](../energy_features/calendar.py): `hour`, `day_of_week`, `month`, ISO `week_of_year`, `is_weekend`; optional sin/cos encodings for **hour** and **day-of-year**; `holidays`-based flags for `country` (default **DE**), plus days to / since nearest holiday.
 2. **Lag / rolling** — [`make_lag_features`](../energy_features/lags.py), [`make_rolling_features`](../energy_features/lags.py): **feature-engine** `LagFeatures` / `WindowFeatures` with default windows **24 h** and **168 h** and stats **mean, std, min, max**. `WindowFeatures(..., periods=shift)` with default **`shift=1`** matches the library's causal forecasting semantics (no future values; contemporaneous target excluded from the rolling slice at \(t\)). [`make_lag_rolling_block`](../energy_features/lags.py) wires both via a sklearn `Pipeline`.
 3. **Solar** — [`add_solar_features`](../energy_features/solar.py): pvlib [`get_solarposition`](../energy_features/solar.py) plus clear-sky **GHI / DNI / DHI** (`ineichen` or `simplified_solis`); optional **HDD / CDD** columns via [`degree_days_from_temperature`](../energy_features/thermal.py) when a dry-bulb temperature column is supplied.
-4. **Thermal (HDD/CDD)** — [`degree_days_from_temperature`](../energy_features/thermal.py): per timestep **HDD** = max(0, T_base − T), **CDD** = max(0, T − T_base) in °C with default **T_base = 18** — use after joining **ERA5 / NWP** (or other) temperature.
+4. **Wind** — [`extrapolate_wind_speed`](../energy_features/wind.py): power-law shear (default **α = 1/7**) from measurement height to hub; [`air_density_kg_m3`](../energy_features/wind.py) / [`density_corrected_wind_speed`](../energy_features/wind.py) from pressure (Pa) and temperature (K or °C); [`run_reference_turbine_power`](../energy_features/wind.py) via windpowerlib **ModelChain** on **Enercon E-126/4200** (135 m hub). High-level [`add_wind_features`](../energy_features/wind.py) merges hub wind, density, and reference power when ERA5/NWP columns are joined.
+5. **Thermal (HDD/CDD)** — [`degree_days_from_temperature`](../energy_features/thermal.py): per timestep **HDD** = max(0, T_base − T), **CDD** = max(0, T − T_base) in °C with default **T_base = 18** — use after joining **ERA5 / NWP** (or other) temperature.
 
 ### Baselines & lift
 
@@ -26,7 +27,15 @@ Cross-links: [README](../README.md), [data_sources](data_sources.md), [decisions
 - Strict **time ordering** — no random split across time for operational forecasts.
 - Inspect **residual ACF** after calendar+lags (notebook) — persistent structure motivates **weather** features next.
 
-## Later milestones (stubs today)
+## Later milestones
 
-- **Physics — wind:** windpowerlib curves (`wind.py`).
-- **Weather vs model:** align ERA5 / NWP leads with generation targets; ablations: calendar-only → +weather → +physics.
+### ERA5 gridded fundamentals — [`weather.py`](../energy_features/weather.py)
+
+1. **Open / concat** — `open_era5` (handles CDS zip bundles), `open_era5_year`; `standardize_era5` renames `valid_time` → **`time`** (UTC) and CDS short names → long names.
+2. **Select / interpolate** — `sel_nearest_time(ds, …)` wraps `.sel(time=…, method="nearest")`; `interp_to_point(ds, lat, lon)` wraps `.interp(latitude=…, longitude=…)`.
+3. **Wind** — `wind_speed_direction_from_uv(u, v)` → speed (m/s) and meteorological direction (° from north, wind **from**).
+4. **Time** — ERA5 is UTC; `ensure_utc_time`, `convert_time_zone(ds, "Europe/Berlin")`, and :class:`ERA5Loader` for a tz-aware pandas frame aligned with OPSD.
+5. **Resample** — `resample_era5(ds, "1D")`; hourly `surface_solar_radiation_downwards` (J/m²) converted to W/m² before averaging.
+6. **Merge-ready loader** — :class:`ERA5Loader` → tidy hourly ``DataFrame`` at ``(lat, lon)`` with ``t2m_k``, ``wind_speed_10m``, ``surface_pressure_pa``, etc. (see :data:`ERA5_MERGE_COLUMNS`).
+
+- **Weather vs model (next):** align ERA5 / NWP leads with generation targets; ablations: calendar-only → +weather → +physics (+ wind physics block above).
