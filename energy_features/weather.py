@@ -613,12 +613,12 @@ class ERA5Loader:
 # --- NWP forecast (Herbie / GFS) -------------------------------------------------
 
 DEFAULT_NWP_MODEL = "gfs"
-# Herbie ≥2026 uses grid-spacing product ids (was ``pgrb2.0p25`` in older releases).
-DEFAULT_GFS_PRODUCT = "0.5-degree"
+# GFS 0.5° grid (Herbie ``pgrb2.0p50`` product id).
+DEFAULT_GFS_PRODUCT = "pgrb2.0p50"
 DEFAULT_GFS_LEAD_HOURS: tuple[int, ...] = (6, 12, 24, 48)
 
 # Herbie search string — 2 m temperature, 10 m wind, downward shortwave at surface.
-GFS_HERBIE_SEARCH = r":(?:TMP:2 m above|UGRD:10 m above|VGRD:10 m above|DSWRF:surface)"
+GFS_HERBIE_SEARCH = r":(?:TMP:2 m above|UGRD:10 m above|VGRD:10 m above|DSWRF:surface|DSWRF|SDSWRF)"
 
 # cfgrib short names → ERA5-compatible long names (solar flux is already W/m² in GFS).
 GFS_CFGrib_TO_ERA5: dict[str, str] = {
@@ -626,6 +626,7 @@ GFS_CFGrib_TO_ERA5: dict[str, str] = {
     "u10": "10m_u_component_of_wind",
     "v10": "10m_v_component_of_wind",
     "dswrf": "surface_solar_radiation_flux",
+    "sdswrf": "surface_solar_radiation_flux",
 }
 
 NWP_FORECAST_MERGE_COLUMNS: tuple[str, ...] = (
@@ -723,7 +724,11 @@ def fetch_gfs_forecast(
         part = part.assign_coords(lead_hours=int(lead_int))
         parts.append(part)
 
-    combined = parts[0] if len(parts) == 1 else xr.concat(parts, dim="step", compat="override")
+    combined = (
+        parts[0]
+        if len(parts) == 1
+        else xr.concat(parts, dim="step", compat="override", coords="minimal")
+    )
     return standardize_nwp(combined, model=DEFAULT_NWP_MODEL)
 
 
