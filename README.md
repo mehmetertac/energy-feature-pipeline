@@ -18,7 +18,7 @@ Related course repo (hourly load parquet built there): [energy-ts-fundamentals R
 |-----------|--------|
 | **Task 1 (this scaffold)** | Package layout, `calendar.py`, `lags.py`, `thermal.py` (HDD/CDD), `solar.py` (pvlib clear-sky), OPSD loader with local-first + download fallback, notebook comparing calendar-only vs calendar+lags + LightGBM, tests + hooks. |
 | **Wind physics** | `wind.py` (power-law shear, air-density correction, windpowerlib reference turbine). |
-| Next | `weather.py` (ERA5 `cdsapi`, NWP e.g. Herbie), weather-vs-model ablations. |
+| Next | `weather.py` ERA5 + GFS NWP (Herbie); weather-vs-model ablations. |
 
 ---
 
@@ -49,9 +49,10 @@ On Windows, if `python` is not on `PATH`, use `py -m pip` / `py -m pytest` inste
 | [`energy_features/thermal.py`](energy_features/thermal.py) | Heating/cooling degree amounts from temperature (HDD/CDD vs 18 °C base) |
 | [`energy_features/solar.py`](energy_features/solar.py) | pvlib solar position + clear-sky GHI/DNI/DHI |
 | [`energy_features/wind.py`](energy_features/wind.py) | Power-law hub extrapolation, air-density correction, Enercon E-126 `ModelChain` |
-| [`energy_features/weather.py`](energy_features/weather.py) | Stub → ERA5 / NWP later |
+| [`energy_features/weather.py`](energy_features/weather.py) | ERA5 (`cdsapi`) + GFS NWP (Herbie) |
 | [`notebooks/01_calendar_lag_baseline.ipynb`](notebooks/01_calendar_lag_baseline.ipynb) | Task 1 demo |
 | [`notebooks/02_wind_features_demo.ipynb`](notebooks/02_wind_features_demo.ipynb) | Synthetic 10 m → 100 m shear + reference turbine power curve |
+| [`notebooks/03_era5_vs_nwp.ipynb`](notebooks/03_era5_vs_nwp.ipynb) | ERA5 truth vs GFS NWP; lead-time MAE weather skill baseline |
 | [`docs/`](docs/) | Data sources, methodology, decisions |
 | [`tests/`](tests/) | Unit tests |
 

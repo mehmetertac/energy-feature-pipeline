@@ -610,6 +610,255 @@ class ERA5Loader:
         return df.loc[start_ts:end_ts]
 
 
-def fetch_nwp(*args, **kwargs) -> None:  # pragma: no cover
-    """Placeholder for NWP retrieval (e.g. Herbie)."""
-    raise NotImplementedError("NWP pipeline is not implemented yet; see docs/data_sources.md.")
+# --- NWP forecast (Herbie / GFS) -------------------------------------------------
+
+DEFAULT_NWP_MODEL = "gfs"
+# Herbie ≥2026 uses grid-spacing product ids (was ``pgrb2.0p25`` in older releases).
+DEFAULT_GFS_PRODUCT = "0.5-degree"
+DEFAULT_GFS_LEAD_HOURS: tuple[int, ...] = (6, 12, 24, 48)
+
+# Herbie search string — 2 m temperature, 10 m wind, downward shortwave at surface.
+GFS_HERBIE_SEARCH = r":(?:TMP:2 m above|UGRD:10 m above|VGRD:10 m above|DSWRF:surface)"
+
+# cfgrib short names → ERA5-compatible long names (solar flux is already W/m² in GFS).
+GFS_CFGrib_TO_ERA5: dict[str, str] = {
+    "t2m": "2m_temperature",
+    "u10": "10m_u_component_of_wind",
+    "v10": "10m_v_component_of_wind",
+    "dswrf": "surface_solar_radiation_flux",
+}
+
+NWP_FORECAST_MERGE_COLUMNS: tuple[str, ...] = (
+    "init_time",
+    "valid_time",
+    "lead_hours",
+    "t2m_k",
+    "t2m_c",
+    "wind_speed_10m",
+    "wind_direction_10m",
+    "wind_u_10m",
+    "wind_v_10m",
+    "surface_solar_radiation_w_m2",
+)
+
+
+def _normalize_grid_coords(ds: xr.Dataset) -> xr.Dataset:
+    """Rename lat/lon and wrap longitude to [-180, 180] for ERA5-compatible interpolation."""
+    out = ds.copy()
+    renames: dict[str, str] = {}
+    if "lat" in out.coords and "latitude" not in out.coords:
+        renames["lat"] = "latitude"
+    if "lon" in out.coords and "longitude" not in out.coords:
+        renames["lon"] = "longitude"
+    if renames:
+        out = out.rename(renames)
+
+    if "longitude" in out.coords and float(out["longitude"].max()) > 180.0:
+        lon = ((out["longitude"] + 180.0) % 360.0) - 180.0
+        out = out.assign_coords(longitude=lon).sortby("longitude")
+    return out
+
+
+def standardize_nwp(ds: xr.Dataset, *, model: str = DEFAULT_NWP_MODEL) -> xr.Dataset:
+    """Normalize Herbie GRIB output: regular lat/lon grid and ERA5-like variable names."""
+    out = _normalize_grid_coords(ds)
+
+    if model == DEFAULT_NWP_MODEL:
+        renames = {
+            short: long for short, long in GFS_CFGrib_TO_ERA5.items() if short in out.data_vars
+        }
+        if renames:
+            out = out.rename(renames)
+
+    if "step" in out.coords and "lead_hours" not in out.coords:
+        lead = (pd.to_timedelta(out["step"].values) / pd.Timedelta(hours=1)).astype(int)
+        out = out.assign_coords(lead_hours=("step", lead))
+
+    if TIME_DIM in out.coords:
+        if TIME_DIM in out.dims:
+            out = ensure_utc_time(out)
+        else:
+            out[TIME_DIM].attrs["timezone"] = "UTC"
+    return out
+
+
+def _herbie_xarray(herbie_obj: object, search: str) -> xr.Dataset:
+    ds = herbie_obj.xarray(search, remove_grib=True)  # type: ignore[attr-defined]
+    if isinstance(ds, list):
+        ds = xr.merge(ds, compat="override")
+    return ds
+
+
+def fetch_gfs_forecast(
+    init_time: str | pd.Timestamp,
+    fxx: Sequence[int] = DEFAULT_GFS_LEAD_HOURS,
+    *,
+    product: str = DEFAULT_GFS_PRODUCT,
+    search: str = GFS_HERBIE_SEARCH,
+    verbose: bool = False,
+) -> xr.Dataset:
+    """Download GFS open-data forecast fields for one init cycle and multiple lead times.
+
+    Unlike ERA5 reanalysis (hindcast), GFS is an **operational forecast**: each row is
+    what the model predicted at ``init_time`` for ``init_time + lead_hours``.
+
+    Uses Herbie to subset GRIB2 from NOAA open-data archives (AWS by default).
+    """
+    from herbie import Herbie
+
+    init = pd.Timestamp(init_time)
+    if init.tz is not None:
+        init = init.tz_convert("UTC").tz_localize(None)
+
+    parts: list[xr.Dataset] = []
+    for lead in fxx:
+        lead_int = int(lead)
+        herbie = Herbie(init, model="gfs", product=product, fxx=lead_int, verbose=verbose)
+        if herbie.grib is None:
+            msg = f"GFS cycle not found: init={init} f{lead_int:03d} product={product}"
+            raise FileNotFoundError(msg)
+        part = _herbie_xarray(herbie, search)
+        if "step" not in part.dims and "step" not in part.coords:
+            part = part.expand_dims(step=[pd.Timedelta(hours=lead_int)])
+        part = part.assign_coords(lead_hours=int(lead_int))
+        parts.append(part)
+
+    combined = parts[0] if len(parts) == 1 else xr.concat(parts, dim="step", compat="override")
+    return standardize_nwp(combined, model=DEFAULT_NWP_MODEL)
+
+
+def fetch_nwp(
+    init_time: str | pd.Timestamp,
+    fxx: Sequence[int] = DEFAULT_GFS_LEAD_HOURS,
+    *,
+    model: str = DEFAULT_NWP_MODEL,
+    **kwargs: object,
+) -> xr.Dataset:
+    """Fetch NWP forecast grid for one init cycle (currently GFS via Herbie)."""
+    if model != DEFAULT_NWP_MODEL:
+        msg = f"unsupported NWP model {model!r}; only {DEFAULT_NWP_MODEL!r} is implemented"
+        raise NotImplementedError(msg)
+    return fetch_gfs_forecast(init_time, fxx=fxx, **kwargs)  # type: ignore[arg-type]
+
+
+def _scalar_timestamp(ds: xr.Dataset, name: str) -> pd.Timestamp | None:
+    if name not in ds.coords:
+        return None
+    value = ds[name].values
+    if value.ndim == 0:
+        return pd.Timestamp(value).tz_localize("UTC")
+    return pd.Timestamp(value.flat[0]).tz_localize("UTC")
+
+
+def _nwp_forecast_point_to_dataframe(point: xr.Dataset, tz: str | None) -> pd.DataFrame:
+    """Map an interpolated multi-lead NWP point dataset to a tidy forecast DataFrame."""
+    iter_dim = "step" if "step" in point.dims else None
+    n_rows = point.sizes[iter_dim] if iter_dim else 1
+
+    u_name = "10m_u_component_of_wind"
+    v_name = "10m_v_component_of_wind"
+    if (
+        u_name in point.data_vars
+        and v_name in point.data_vars
+        and "wind_speed_10m" not in point.data_vars
+    ):
+        speed, direction = wind_speed_direction_from_uv(point[u_name], point[v_name])
+        point = point.assign(wind_speed_10m=speed, wind_direction_10m=direction)
+
+    rows: list[dict[str, object]] = []
+    for idx in range(n_rows):
+        sl = point.isel(step=idx) if iter_dim else point
+        init_ts = _scalar_timestamp(sl, TIME_DIM)
+        valid_ts = _scalar_timestamp(sl, "valid_time")
+        if valid_ts is None and init_ts is not None and "step" in sl.coords:
+            valid_ts = init_ts + pd.Timedelta(sl["step"].values)
+        if valid_ts is None:
+            valid_ts = init_ts
+
+        lead_hours = int(sl["lead_hours"].values) if "lead_hours" in sl.coords else 0
+        if lead_hours == 0 and "step" in sl.coords:
+            lead_hours = int(pd.Timedelta(sl["step"].values) / pd.Timedelta(hours=1))
+
+        row: dict[str, object] = {
+            "init_time": init_ts,
+            "valid_time": valid_ts,
+            "lead_hours": lead_hours,
+        }
+
+        if "2m_temperature" in sl.data_vars:
+            t_k = float(sl["2m_temperature"].values)
+            row["t2m_k"] = t_k
+            row["t2m_c"] = t_k - 273.15
+        if u_name in sl.data_vars:
+            row["wind_u_10m"] = float(sl[u_name].values)
+        if v_name in sl.data_vars:
+            row["wind_v_10m"] = float(sl[v_name].values)
+        if "wind_speed_10m" in sl.data_vars:
+            row["wind_speed_10m"] = float(sl["wind_speed_10m"].values)
+        if "wind_direction_10m" in sl.data_vars:
+            row["wind_direction_10m"] = float(sl["wind_direction_10m"].values)
+        if "surface_solar_radiation_flux" in sl.data_vars:
+            row["surface_solar_radiation_w_m2"] = float(sl["surface_solar_radiation_flux"].values)
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    df["valid_time"] = pd.to_datetime(df["valid_time"], utc=True)
+    df["init_time"] = pd.to_datetime(df["init_time"], utc=True)
+    if tz is not None:
+        df["valid_time"] = df["valid_time"].dt.tz_convert(tz)
+        df["init_time"] = df["init_time"].dt.tz_convert(tz)
+    df = df.set_index("valid_time")
+    ordered = [c for c in NWP_FORECAST_MERGE_COLUMNS if c in df.columns or c == "valid_time"]
+    out = df[[c for c in ordered if c != "valid_time"]].sort_index()
+    out.index.name = "valid_time"
+    return out
+
+
+def nwp_forecast_point_from_dataset(
+    ds: xr.Dataset,
+    latitude: float,
+    longitude: float,
+    *,
+    tz: str | None = "Europe/Berlin",
+) -> pd.DataFrame:
+    """Extract forecast point values at ``latitude`` / ``longitude`` from a multi-lead NWP grid."""
+    ds = standardize_nwp(ds)
+    point = interp_to_point(ds, latitude, longitude)
+    for dim in ("latitude", "longitude"):
+        if dim in point.dims and point.sizes.get(dim, 0) == 1:
+            point = point.squeeze(dim, drop=True)
+    return _nwp_forecast_point_to_dataframe(point, tz)
+
+
+def extract_nwp_forecast_point(
+    init_time: str | pd.Timestamp,
+    latitude: float = DEFAULT_LATITUDE,
+    longitude: float = DEFAULT_LONGITUDE,
+    fxx: Sequence[int] = DEFAULT_GFS_LEAD_HOURS,
+    *,
+    model: str = DEFAULT_NWP_MODEL,
+    product: str = DEFAULT_GFS_PRODUCT,
+    tz: str | None = "Europe/Berlin",
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """Fetch one NWP init cycle and return point forecasts at ERA5 study coordinates.
+
+    Default location matches :data:`DEFAULT_LATITUDE` / :data:`DEFAULT_LONGITUDE`
+    (52.5°N, 13.4°E — same as ERA5 downloads).
+
+    Returns one row per lead time with :data:`NWP_FORECAST_MERGE_COLUMNS`.
+    """
+    if model != DEFAULT_NWP_MODEL:
+        msg = f"unsupported NWP model {model!r}; only {DEFAULT_NWP_MODEL!r} is implemented"
+        raise NotImplementedError(msg)
+
+    ds = fetch_gfs_forecast(
+        init_time,
+        fxx=fxx,
+        product=product,
+        verbose=verbose,
+    )
+    return nwp_forecast_point_from_dataset(ds, latitude, longitude, tz=tz)

@@ -38,4 +38,12 @@ Cross-links: [README](../README.md), [data_sources](data_sources.md), [decisions
 5. **Resample** — `resample_era5(ds, "1D")`; hourly `surface_solar_radiation_downwards` (J/m²) converted to W/m² before averaging.
 6. **Merge-ready loader** — :class:`ERA5Loader` → tidy hourly ``DataFrame`` at ``(lat, lon)`` with ``t2m_k``, ``wind_speed_10m``, ``surface_pressure_pa``, etc. (see :data:`ERA5_MERGE_COLUMNS`).
 
+### NWP forecast (GFS via Herbie) — [`weather.py`](../energy_features/weather.py)
+
+1. **Fetch** — :func:`fetch_gfs_forecast` / :func:`fetch_nwp`: one **init time**, multiple **lead hours** (default 6 / 12 / 24 / 48); Herbie subsets GRIB2 from NOAA open data.
+2. **Standardize** — :func:`standardize_nwp`: cfgrib short names → ERA5-like long names; longitude wrapped to [-180, 180].
+3. **Point extract** — :func:`extract_nwp_forecast_point` / :func:`nwp_forecast_point_from_dataset`: bilinear ``interp`` at the ERA5 study point (52.5°N, 13.4°E); output includes ``init_time``, ``valid_time``, ``lead_hours`` plus weather columns in :data:`NWP_FORECAST_MERGE_COLUMNS`.
+4. **Reanalysis vs forecast** — ERA5 is hindcast truth for feature joins; GFS rows are **forecasts** (what was available at ``init_time`` for each lead). Do not treat GFS as observed weather when scoring against generation actuals unless emulating an operational setting.
+5. **Demo notebook** — [`03_era5_vs_nwp.ipynb`](../notebooks/03_era5_vs_nwp.ipynb): one-week ERA5 vs GFS plots and lead-time MAE weather skill baseline.
+
 - **Weather vs model (next):** align ERA5 / NWP leads with generation targets; ablations: calendar-only → +weather → +physics (+ wind physics block above).

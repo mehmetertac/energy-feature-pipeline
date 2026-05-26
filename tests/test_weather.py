@@ -9,15 +9,21 @@ import pandas as pd
 import pytest
 import xarray as xr
 from energy_features.weather import (
+    DEFAULT_GFS_LEAD_HOURS,
     ERA5_MERGE_COLUMNS,
+    NWP_FORECAST_MERGE_COLUMNS,
     ERA5Loader,
     convert_time_zone,
     extract_era5_point,
+    extract_nwp_forecast_point,
+    fetch_gfs_forecast,
     interp_to_point,
+    nwp_forecast_point_from_dataset,
     open_era5,
     resample_era5,
     sel_nearest_time,
     standardize_era5,
+    standardize_nwp,
     wind_speed_direction_from_uv,
 )
 
@@ -144,3 +150,79 @@ def test_era5_loader_real_january_week() -> None:
     assert set(ERA5_MERGE_COLUMNS).issubset(df.columns)
     assert str(df.index.tz) == "Europe/Berlin"
     assert df.index.is_monotonic_increasing
+
+
+def _synthetic_gfs_forecast(*, leads: tuple[int, ...] = (6, 12, 24, 48)) -> xr.Dataset:
+    init = pd.Timestamp("2024-06-01T00:00:00")
+    lat = np.linspace(51.0, 54.0, 4)
+    lon = np.linspace(11.0, 16.0, 5)
+    steps = pd.to_timedelta(list(leads), unit="h")
+    shape = (len(leads), 4, 5)
+    coords = {
+        "step": steps,
+        "latitude": lat,
+        "longitude": lon,
+        "time": init,
+        "valid_time": ("step", init + steps),
+        "lead_hours": ("step", list(leads)),
+    }
+    dims = ("step", "latitude", "longitude")
+    return xr.Dataset(
+        {
+            "t2m": xr.DataArray(np.full(shape, 290.0), coords=coords, dims=dims),
+            "u10": xr.DataArray(np.full(shape, 3.0), coords=coords, dims=dims),
+            "v10": xr.DataArray(np.full(shape, 4.0), coords=coords, dims=dims),
+            "dswrf": xr.DataArray(np.full(shape, 250.0), coords=coords, dims=dims),
+        }
+    )
+
+
+def test_standardize_nwp_renames_gfs_variables() -> None:
+    ds = _synthetic_gfs_forecast(leads=(6,))
+    out = standardize_nwp(ds)
+    assert "2m_temperature" in out.data_vars
+    assert "10m_u_component_of_wind" in out.data_vars
+    assert "surface_solar_radiation_flux" in out.data_vars
+    assert int(out["lead_hours"].values) == 6
+
+
+def test_nwp_forecast_point_from_dataset() -> None:
+    ds = standardize_nwp(_synthetic_gfs_forecast())
+    df = nwp_forecast_point_from_dataset(ds, 52.5, 13.4, tz="UTC")
+    assert len(df) == len(DEFAULT_GFS_LEAD_HOURS)
+    assert df.index.name == "valid_time"
+    value_cols = [c for c in NWP_FORECAST_MERGE_COLUMNS if c != "valid_time"]
+    assert list(df.columns) == value_cols
+    assert float(df["wind_speed_10m"].iloc[0]) == pytest.approx(5.0)
+    assert float(df["t2m_c"].iloc[0]) == pytest.approx(float(df["t2m_k"].iloc[0]) - 273.15)
+    assert float(df["surface_solar_radiation_w_m2"].iloc[0]) == pytest.approx(250.0)
+    assert df["lead_hours"].tolist() == list(DEFAULT_GFS_LEAD_HOURS)
+
+
+def test_fetch_gfs_forecast_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeHerbie:
+        grib = None
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+    monkeypatch.setattr("herbie.Herbie", FakeHerbie)
+    with pytest.raises(FileNotFoundError, match="GFS cycle not found"):
+        fetch_gfs_forecast("2024-06-01", fxx=[6])
+
+
+@pytest.mark.integration
+def test_extract_nwp_forecast_point_gfs() -> None:
+    df = extract_nwp_forecast_point(
+        "2024-06-01 00:00",
+        latitude=52.5,
+        longitude=13.4,
+        fxx=[6, 12],
+        tz="UTC",
+    )
+    assert len(df) == 2
+    assert df.index.name == "valid_time"
+    value_cols = [c for c in NWP_FORECAST_MERGE_COLUMNS if c != "valid_time"]
+    assert set(value_cols).issubset(df.columns)
+    assert df["t2m_k"].between(250.0, 320.0).all()
+    assert df["surface_solar_radiation_w_m2"].ge(0.0).all()
